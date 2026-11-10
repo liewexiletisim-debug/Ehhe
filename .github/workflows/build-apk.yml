@@ -2,6 +2,8 @@ name: Build APK
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -34,6 +36,29 @@ jobs:
             exit 1
           fi
 
+      - name: Sürüm bilgisini uygulamaya yaz
+        run: |
+          cat > "$APP_DIR/www/version.js" <<VER
+          window.APP_VERSION=${{ github.run_number }};
+          window.APP_REPO='${{ github.repository }}';
+          VER
+          cat "$APP_DIR/www/version.js"
+
+      - name: Sabit imza anahtarı (güncellemenin kurulabilmesi için)
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          mkdir -p ~/.android
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > ~/.android/debug.keystore
+            echo "Anahtar: GitHub Secrets"
+          elif [ -f "$APP_DIR/debug.keystore" ]; then
+            cp "$APP_DIR/debug.keystore" ~/.android/debug.keystore
+            echo "Anahtar: depodaki debug.keystore"
+          else
+            echo "::warning::debug.keystore yok, her derleme farklı imzalanır; güncelleme kurulamaz"
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -47,6 +72,8 @@ jobs:
           cd "$APP_DIR"
           npm install
           npx cap add android
+          sed -i "s/versionCode 1/versionCode ${{ github.run_number }}/; s/versionName \"1.0\"/versionName \"${{ github.run_number }}\"/" android/app/build.gradle
+          grep -n "versionCode\|versionName" android/app/build.gradle
           npx cap sync android
 
       - name: APK derle
@@ -60,3 +87,11 @@ jobs:
           name: uye-kayit-apk
           path: ${{ env.APP_DIR }}/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Release yayınla (uygulama buradan güncelleme bulur)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          N=${{ github.run_number }}
+          cp "$APP_DIR/android/app/build/outputs/apk/debug/app-debug.apk" "uye-kayit-v$N.apk"
+          gh release create "v$N" "uye-kayit-v$N.apk" --repo "${{ github.repository }}" --title "v$N" --notes "Otomatik sürüm $N" --latest
